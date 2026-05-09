@@ -89,6 +89,7 @@ def screening(
             position_ids=softmask_position_ids,
             window=window,
         )  # [batch_size, num_heads, seq_len, seq_len]
+        softmask = softmask.to(dtype=relevance.dtype)
         relevance = relevance * softmask
 
     # Optional attention mask (e.g., for padding tokens)
