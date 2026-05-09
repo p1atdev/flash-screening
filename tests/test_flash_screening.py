@@ -229,6 +229,13 @@ def test_flash_screening_cuda_backward_matches_eager_with_position_ids() -> None
 def test_flash_screening_cuda_backward_matches_eager_non_causal() -> None:
     query, key, value, acceptance, window = _inputs(device="cuda", seq_len=8)
     grad_output = torch.randn_like(value)
+    position_ids = torch.stack(
+        [
+            torch.arange(query.size(2), device=query.device),
+            torch.arange(query.size(2), device=query.device) * 2,
+        ],
+        dim=-1,
+    )[None, :, :].expand(query.size(0), -1, -1)
 
     actual, actual_grads = _run_backward(
         use_flash=True,
@@ -238,6 +245,7 @@ def test_flash_screening_cuda_backward_matches_eager_non_causal() -> None:
         acceptance=acceptance,
         window=window,
         grad_output=grad_output,
+        position_ids=position_ids,
         is_causal=False,
     )
     expected, expected_grads = _run_backward(
@@ -248,6 +256,7 @@ def test_flash_screening_cuda_backward_matches_eager_non_causal() -> None:
         acceptance=acceptance,
         window=window,
         grad_output=grad_output,
+        position_ids=position_ids,
         is_causal=False,
     )
 
@@ -418,6 +427,13 @@ def test_flash_screening_cuda_matches_eager_with_position_ids_and_mask() -> None
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_flash_screening_cuda_matches_eager_non_causal() -> None:
     query, key, value, acceptance, window = _inputs(device="cuda")
+    position_ids = torch.stack(
+        [
+            torch.arange(query.size(2), device=query.device),
+            torch.arange(query.size(2), device=query.device) * 2,
+        ],
+        dim=-1,
+    )[None, :, :].expand(query.size(0), -1, -1)
     attention_mask = torch.ones(
         query.size(0),
         query.size(2),
@@ -433,6 +449,7 @@ def test_flash_screening_cuda_matches_eager_non_causal() -> None:
             value,
             acceptance=acceptance,
             window=window,
+            position_ids=position_ids,
             attention_mask=attention_mask,
             is_causal=False,
         )
@@ -442,6 +459,7 @@ def test_flash_screening_cuda_matches_eager_non_causal() -> None:
             value,
             acceptance=acceptance,
             window=window,
+            position_ids=position_ids,
             attention_mask=attention_mask,
             is_causal=False,
         )

@@ -533,6 +533,7 @@ def flash_screening(
         window=window,
         position_ids=position_ids,
         attention_mask=attention_mask,
+        is_causal=is_causal,
     )
 
     if _should_use_eager(
@@ -939,6 +940,7 @@ def _validate_inputs(
     window: torch.Tensor,
     position_ids: torch.Tensor | None,
     attention_mask: torch.Tensor | None,
+    is_causal: bool,
 ) -> None:
     if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
         raise ValueError("query, key, and value must be shaped [batch, heads, seq, dim]")
@@ -979,13 +981,25 @@ def _validate_inputs(
 
     batch_size, _, seq_len, _ = query.shape
     if position_ids is not None:
-        valid_position_shape = position_ids.shape == (batch_size, seq_len) or (
-            position_ids.shape == (batch_size, seq_len, 1)
-        )
-        if not valid_position_shape:
-            raise ValueError(
-                "position_ids must be shaped [batch, seq] or [batch, seq, 1]"
+        if is_causal:
+            valid_position_shape = position_ids.shape == (batch_size, seq_len) or (
+                position_ids.shape == (batch_size, seq_len, 1)
             )
+            if not valid_position_shape:
+                raise ValueError(
+                    "causal position_ids must be shaped [batch, seq] "
+                    "or [batch, seq, 1]"
+                )
+        else:
+            valid_position_shape = (
+                position_ids.ndim >= 2
+                and position_ids.shape[0] == batch_size
+                and position_ids.shape[1] == seq_len
+            )
+            if not valid_position_shape:
+                raise ValueError(
+                    "non-causal position_ids must start with [batch, seq]"
+                )
         if position_ids.device != query.device:
             raise ValueError("position_ids must be on the same device as query")
 
