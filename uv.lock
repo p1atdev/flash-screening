@@ -94,7 +94,6 @@ name = "flash-screening"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "pytest" },
     { name = "torch" },
     { name = "triton" },
 ]
@@ -108,7 +107,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pytest", specifier = ">=9.0.3" },
     { name = "torch", specifier = ">=2.11.0" },
     { name = "triton", specifier = ">=3.6.0" },
 ]
