@@ -1,8 +1,20 @@
 import pytest
 import torch
 
-from flash_screening import flash_screening
-from flash_screening.eager import screening as eager_screening
+from flash_screening import (
+    apply_mipe,
+    compute_freqs_cis,
+    flash_screening,
+    mipe_rotation,
+    unit_length_norm,
+)
+from flash_screening.eager import (
+    apply_mipe as eager_apply_mipe,
+    compute_freqs_cis as eager_compute_freqs_cis,
+    mipe_rotation as eager_mipe_rotation,
+    screening as eager_screening,
+    unit_length_norm as eager_unit_length_norm,
+)
 
 
 def _inputs(
@@ -111,6 +123,182 @@ def _assert_grads_close(
         else:
             assert actual_grad is not None
             torch.testing.assert_close(actual_grad, expected_grad, rtol=6e-2, atol=6e-2)
+
+
+def test_mipe_helpers_cpu_fall_back_to_eager() -> None:
+    position_ids = torch.arange(6, dtype=torch.float32)[None, :].expand(2, -1)
+    window = torch.tensor([3.5, 128.0, 300.0])
+    sequence = torch.randn(2, 3, 6, 7)
+
+    torch.testing.assert_close(
+        unit_length_norm(sequence),
+        eager_unit_length_norm(sequence),
+    )
+    torch.testing.assert_close(
+        mipe_rotation(position_ids, window),
+        eager_mipe_rotation(position_ids, window),
+    )
+
+    position_ids_3d = torch.stack((position_ids, position_ids * 2.0), dim=-1)
+    freqs = compute_freqs_cis(position_ids_3d, window)
+    expected_freqs = eager_compute_freqs_cis(position_ids_3d, window)
+    torch.testing.assert_close(freqs, expected_freqs)
+    torch.testing.assert_close(
+        apply_mipe(sequence, freqs),
+        eager_apply_mipe(sequence, expected_freqs),
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_unit_length_norm_cuda_backward_matches_eager() -> None:
+    torch.manual_seed(1)
+    x = torch.randn(2, 3, 13, device="cuda")
+    grad_output = torch.randn_like(x)
+
+    actual_x = _clone_requires_grad(x)
+    expected_x = _clone_requires_grad(x)
+
+    actual = unit_length_norm(actual_x, eps=1e-5)
+    expected = eager_unit_length_norm(expected_x, eps=1e-5)
+    (actual * grad_output).sum().backward()
+    (expected * grad_output).sum().backward()
+
+    _assert_close(actual, expected)
+    torch.testing.assert_close(actual_x.grad, expected_x.grad, rtol=6e-2, atol=6e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_mipe_rotation_cuda_backward_matches_eager() -> None:
+    base = torch.arange(7, device="cuda", dtype=torch.float32)
+    position_ids = torch.stack((base, base * 1.5 + 0.25), dim=0)
+    window = torch.tensor([3.5, 128.0, 300.0], device="cuda")
+
+    actual_position_ids = _clone_requires_grad(position_ids)
+    expected_position_ids = _clone_requires_grad(position_ids)
+    actual_window = _clone_requires_grad(window)
+    expected_window = _clone_requires_grad(window)
+
+    actual = mipe_rotation(actual_position_ids, actual_window)
+    expected = eager_mipe_rotation(expected_position_ids, expected_window)
+    grad_output = torch.randn_like(actual)
+    (actual * grad_output).sum().backward()
+    (expected * grad_output).sum().backward()
+
+    _assert_close(actual, expected)
+    torch.testing.assert_close(
+        actual_position_ids.grad,
+        expected_position_ids.grad,
+        rtol=6e-2,
+        atol=6e-2,
+    )
+    torch.testing.assert_close(
+        actual_window.grad,
+        expected_window.grad,
+        rtol=6e-2,
+        atol=6e-2,
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_compute_freqs_cis_cuda_backward_matches_eager() -> None:
+    base = torch.arange(6, device="cuda", dtype=torch.float32)
+    position_ids = torch.stack((base, base * 2.0 + 1.0), dim=-1)
+    position_ids = position_ids[None, :, :].expand(2, -1, -1).contiguous()
+    window = torch.tensor([4.0, 96.0, 280.0], device="cuda")
+
+    actual_position_ids = _clone_requires_grad(position_ids)
+    expected_position_ids = _clone_requires_grad(position_ids)
+    actual_window = _clone_requires_grad(window)
+    expected_window = _clone_requires_grad(window)
+
+    actual = compute_freqs_cis(actual_position_ids, actual_window)
+    expected = eager_compute_freqs_cis(expected_position_ids, expected_window)
+    grad_output = torch.randn_like(actual)
+    (actual * grad_output).sum().backward()
+    (expected * grad_output).sum().backward()
+
+    _assert_close(actual, expected)
+    torch.testing.assert_close(
+        actual_position_ids.grad,
+        expected_position_ids.grad,
+        rtol=6e-2,
+        atol=6e-2,
+    )
+    torch.testing.assert_close(
+        actual_window.grad,
+        expected_window.grad,
+        rtol=6e-2,
+        atol=6e-2,
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_apply_mipe_cuda_backward_matches_eager() -> None:
+    torch.manual_seed(2)
+    sequence = torch.randn(2, 3, 5, 7, device="cuda")
+    freqs = torch.randn(2, 3, 5, 4, device="cuda")
+
+    actual_sequence = _clone_requires_grad(sequence)
+    expected_sequence = _clone_requires_grad(sequence)
+    actual_freqs = _clone_requires_grad(freqs)
+    expected_freqs = _clone_requires_grad(freqs)
+
+    actual = apply_mipe(actual_sequence, actual_freqs)
+    expected = eager_apply_mipe(expected_sequence, expected_freqs)
+    grad_output = torch.randn_like(actual)
+    (actual * grad_output).sum().backward()
+    (expected * grad_output).sum().backward()
+
+    _assert_close(actual, expected)
+    torch.testing.assert_close(
+        actual_sequence.grad,
+        expected_sequence.grad,
+        rtol=6e-2,
+        atol=6e-2,
+    )
+    torch.testing.assert_close(
+        actual_freqs.grad,
+        expected_freqs.grad,
+        rtol=6e-2,
+        atol=6e-2,
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_mipe_pipeline_cuda_backward_matches_eager() -> None:
+    torch.manual_seed(3)
+    sequence = torch.randn(2, 3, 6, 6, device="cuda")
+    base = torch.arange(6, device="cuda", dtype=torch.float32)
+    position_ids = torch.stack((base, base * 0.5 + 2.0), dim=-1)
+    position_ids = position_ids[None, :, :].expand(2, -1, -1).contiguous()
+    window = torch.tensor([8.0, 128.0, 320.0], device="cuda")
+    grad_output = torch.randn_like(sequence)
+
+    actual_sequence = _clone_requires_grad(sequence)
+    expected_sequence = _clone_requires_grad(sequence)
+    actual_position_ids = _clone_requires_grad(position_ids)
+    expected_position_ids = _clone_requires_grad(position_ids)
+    actual_window = _clone_requires_grad(window)
+    expected_window = _clone_requires_grad(window)
+
+    actual = apply_mipe(
+        unit_length_norm(actual_sequence),
+        compute_freqs_cis(actual_position_ids, actual_window),
+    )
+    expected = eager_apply_mipe(
+        eager_unit_length_norm(expected_sequence),
+        eager_compute_freqs_cis(expected_position_ids, expected_window),
+    )
+    (actual * grad_output).sum().backward()
+    (expected * grad_output).sum().backward()
+
+    _assert_close(actual, expected)
+    for actual_grad, expected_grad in (
+        (actual_sequence.grad, expected_sequence.grad),
+        (actual_position_ids.grad, expected_position_ids.grad),
+        (actual_window.grad, expected_window.grad),
+    ):
+        torch.testing.assert_close(actual_grad, expected_grad, rtol=6e-2, atol=6e-2)
 
 
 def test_flash_screening_cpu_falls_back_to_eager() -> None:

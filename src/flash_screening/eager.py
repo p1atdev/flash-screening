@@ -1,6 +1,90 @@
 import torch
 
 
+def unit_length_norm(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    return x / x.norm(p=2, dim=-1, keepdim=True).clip(min=eps)
+
+
+# MiPE is a RoPE-like rotation [18] applied to one feature pair per position
+# axis, with a rotation angle modulated by the learned screening window w.
+def mipe_rotation(
+    position_ids: torch.Tensor,  # [batch_size, seq_len]
+    window: torch.Tensor,  # [num_heads]
+    window_threshold: float = 256.0,
+) -> torch.Tensor:
+    batch_size, seq_len = position_ids.size()
+    num_heads = window.size(0)
+    window = window[None, :, None].repeat(
+        batch_size, 1, seq_len
+    )  # [batch_size, num_heads, seq_len]
+
+    # gamma(w)
+    gamma = torch.where(
+        window < window_threshold,
+        (torch.cos(torch.pi * window / window_threshold) + 1) / 2,
+        torch.zeros_like(window),
+    )
+
+    position_ids = position_ids[:, None, :].repeat(
+        1, num_heads, 1
+    )  # [batch_size, num_heads, seq_len]
+
+    rotation = torch.pi * position_ids * gamma / window
+
+    return rotation
+
+
+def compute_freqs_cis(
+    position_ids: torch.Tensor,  # [batch_size, seq_len, num_axes]
+    window: torch.Tensor,  # [num_heads]
+    window_threshold: float = 256.0,
+) -> torch.Tensor:
+    freqs_cis = []  # [batch_size, num_heads, seq_len, 2*num_axes]
+
+    if position_ids.ndim == 2:
+        position_ids = position_ids.unsqueeze(-1)  # [batch_size, seq_len, 1]
+
+    for axis in range(position_ids.size(-1)):
+        rotation = mipe_rotation(
+            position_ids=position_ids[..., axis],
+            window=window,
+            window_threshold=window_threshold,
+        )  # [batch_size, num_heads, seq_len]
+
+        freqs_cis.append(
+            torch.stack([torch.cos(rotation), torch.sin(rotation)], dim=-1)
+        )
+        # [batch_size, num_heads, seq_len, 2]
+
+    return torch.cat(freqs_cis, dim=-1)
+
+
+def apply_mipe(
+    sequence: torch.Tensor,  # [batch_size, num_heads, seq_len, head_dim]
+    freqs_cis: torch.Tensor,  # [batch_size, num_heads, seq_len, 2 (cos, sin) * num_axes]
+) -> torch.Tensor:
+    _, _, _, encoded_dim = freqs_cis.size()
+
+    assert encoded_dim % 2 == 0, "encoded_dim must be even"
+    assert sequence.size(-1) >= encoded_dim, "head_dim must be >= encoded_dim"
+
+    x_even = sequence[..., :encoded_dim:2]
+    x_odd = sequence[..., 1:encoded_dim:2]
+
+    cos = freqs_cis[..., :encoded_dim:2]
+    sin = freqs_cis[..., 1:encoded_dim:2]
+
+    x1 = x_even * cos - x_odd * sin
+    x2 = x_even * sin + x_odd * cos
+
+    rotated = torch.stack((x1, x2), dim=-1).flatten(-2)
+
+    return torch.cat(
+        [rotated, sequence[..., encoded_dim:]],
+        dim=-1,
+    )
+
+
 def trim_similarity(
     similarity: torch.Tensor,  # [batch_size, num_heads, seq_len, seq_len]
     acceptance: torch.Tensor,  # [num_heads]
