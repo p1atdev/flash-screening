@@ -265,6 +265,83 @@ def test_apply_mipe_cuda_backward_matches_eager() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_compute_freqs_cis_cuda_low_precision_returns_float32(
+    dtype: torch.dtype,
+) -> None:
+    base = torch.arange(5, device="cuda", dtype=dtype)
+    position_ids = torch.stack((base, base * 2 + 1), dim=-1)
+    position_ids = position_ids[None, :, :].expand(2, -1, -1).contiguous()
+    window = torch.tensor([4.0, 96.0, 280.0], device="cuda", dtype=dtype)
+
+    actual_position_ids = _clone_requires_grad(position_ids)
+    expected_position_ids = _clone_requires_grad(position_ids)
+    actual_window = _clone_requires_grad(window)
+    expected_window = _clone_requires_grad(window)
+
+    actual = compute_freqs_cis(actual_position_ids, actual_window)
+    expected = eager_compute_freqs_cis(expected_position_ids, expected_window)
+    assert actual.dtype == torch.float32
+    assert expected.dtype == torch.float32
+
+    grad_output = torch.randn_like(actual)
+    (actual * grad_output).sum().backward()
+    (expected * grad_output).sum().backward()
+
+    _assert_low_precision_close(actual, expected)
+    torch.testing.assert_close(
+        actual_position_ids.grad,
+        expected_position_ids.grad,
+        rtol=8e-2,
+        atol=8e-2,
+    )
+    torch.testing.assert_close(
+        actual_window.grad,
+        expected_window.grad,
+        rtol=8e-2,
+        atol=8e-2,
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_apply_mipe_cuda_low_precision_returns_sequence_dtype(
+    dtype: torch.dtype,
+) -> None:
+    torch.manual_seed(4)
+    sequence = torch.randn(2, 3, 5, 7, device="cuda", dtype=dtype)
+    freqs = torch.randn(2, 3, 5, 4, device="cuda", dtype=torch.float32)
+
+    actual_sequence = _clone_requires_grad(sequence)
+    expected_sequence = _clone_requires_grad(sequence)
+    actual_freqs = _clone_requires_grad(freqs)
+    expected_freqs = _clone_requires_grad(freqs)
+
+    actual = apply_mipe(actual_sequence, actual_freqs)
+    expected = eager_apply_mipe(expected_sequence, expected_freqs)
+    assert actual.dtype == dtype
+    assert expected.dtype == dtype
+
+    grad_output = torch.randn_like(actual)
+    (actual * grad_output).sum().backward()
+    (expected * grad_output).sum().backward()
+
+    _assert_low_precision_close(actual, expected)
+    torch.testing.assert_close(
+        actual_sequence.grad,
+        expected_sequence.grad,
+        rtol=8e-2,
+        atol=8e-2,
+    )
+    torch.testing.assert_close(
+        actual_freqs.grad,
+        expected_freqs.grad,
+        rtol=8e-2,
+        atol=8e-2,
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_mipe_pipeline_cuda_backward_matches_eager() -> None:
     torch.manual_seed(3)
     sequence = torch.randn(2, 3, 6, 6, device="cuda")

@@ -56,7 +56,7 @@ def compute_freqs_cis(
         )
         # [batch_size, num_heads, seq_len, 2]
 
-    return torch.cat(freqs_cis, dim=-1)
+    return torch.cat(freqs_cis, dim=-1).float()
 
 
 def apply_mipe(
@@ -68,8 +68,10 @@ def apply_mipe(
     assert encoded_dim % 2 == 0, "encoded_dim must be even"
     assert sequence.size(-1) >= encoded_dim, "head_dim must be >= encoded_dim"
 
-    x_even = sequence[..., :encoded_dim:2]
-    x_odd = sequence[..., 1:encoded_dim:2]
+    seq = sequence.float()
+
+    x_even = seq[..., :encoded_dim:2]
+    x_odd = seq[..., 1:encoded_dim:2]
 
     cos = freqs_cis[..., :encoded_dim:2]
     sin = freqs_cis[..., 1:encoded_dim:2]
@@ -80,9 +82,9 @@ def apply_mipe(
     rotated = torch.stack((x1, x2), dim=-1).flatten(-2)
 
     return torch.cat(
-        [rotated, sequence[..., encoded_dim:]],
+        [rotated, seq[..., encoded_dim:]],
         dim=-1,
-    )
+    ).type_as(sequence)
 
 
 def trim_similarity(

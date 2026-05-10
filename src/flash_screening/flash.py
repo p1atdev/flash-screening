@@ -299,24 +299,36 @@ def _apply_mipe_forward_kernel(
 
     seq_base = token_idx * HEAD_DIM
     freq_base = token_idx * ENCODED_DIM
-    x_even = tl.load(sequence + seq_base + pair_dim, mask=mask & in_encoded, other=0.0)
+    x_even = tl.load(
+        sequence + seq_base + pair_dim,
+        mask=mask & in_encoded,
+        other=0.0,
+    ).to(tl.float32)
     x_odd = tl.load(
         sequence + seq_base + pair_dim + 1,
         mask=mask & in_encoded,
         other=0.0,
-    )
-    cos = tl.load(freqs_cis + freq_base + pair_dim, mask=mask & in_encoded, other=0.0)
+    ).to(tl.float32)
+    cos = tl.load(
+        freqs_cis + freq_base + pair_dim,
+        mask=mask & in_encoded,
+        other=0.0,
+    ).to(tl.float32)
     sin = tl.load(
         freqs_cis + freq_base + pair_dim + 1,
         mask=mask & in_encoded,
         other=0.0,
-    )
+    ).to(tl.float32)
 
     rotated_even = x_even * cos - x_odd * sin
     rotated_odd = x_even * sin + x_odd * cos
     rotated = tl.where(dim_idx % 2 == 0, rotated_even, rotated_odd)
 
-    tail = tl.load(sequence + offsets, mask=mask & (dim_idx >= ENCODED_DIM), other=0.0)
+    tail = tl.load(
+        sequence + offsets,
+        mask=mask & (dim_idx >= ENCODED_DIM),
+        other=0.0,
+    ).to(tl.float32)
     values = tl.where(in_encoded, rotated, tail)
     tl.store(output + offsets, values, mask=mask)
 
@@ -1045,7 +1057,7 @@ class _ComputeFreqsCisFunction(torch.autograd.Function):
         output = torch.empty(
             (batch_size, num_heads, seq_len, 2 * num_axes),
             device=window.device,
-            dtype=torch.result_type(position_ids, window),
+            dtype=torch.float32,
         )
         total = batch_size * num_heads * seq_len * num_axes
 
@@ -1133,7 +1145,7 @@ class _ApplyMipeFunction(torch.autograd.Function):
         output = torch.empty(
             sequence_c.shape,
             device=sequence.device,
-            dtype=torch.result_type(sequence, freqs_cis),
+            dtype=sequence.dtype,
         )
         total = output.numel()
 
